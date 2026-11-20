@@ -15,16 +15,49 @@
 // stand in for /bot and /output:
 //   mkdir -p out && MAKEFUN_BOT_DIR=. MAKEFUN_OUTPUT_DIR=out node main.ts
 
-import { copyFileSync, mkdirSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 
 const BOT_DIR = process.env.MAKEFUN_BOT_DIR ?? '/bot';
 const OUTPUT_DIR = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 
+function sha256File(path: string): string {
+  return createHash('sha256').update(readFileSync(path)).digest('hex');
+}
+
+const SRC_PATH = join(BOT_DIR, 'POST.json');
+const DEST_PATH = join(OUTPUT_DIR, 'POST.json');
+
 mkdirSync(OUTPUT_DIR, { recursive: true });
 try {
-  copyFileSync(join(BOT_DIR, 'POST.json'), join(OUTPUT_DIR, 'POST.json'));
+  copyFileSync(SRC_PATH, DEST_PATH);
 } catch (err) {
   console.error(`POST.json could not be copied from ${BOT_DIR}: ${(err as Error).message}`);
+  process.exit(1);
+}
+
+// Validate the copy: it must be byte-identical to the source, parse as JSON,
+// and carry a well-formed X status URL. Fail loudly instead of handing the
+// gate a broken or wrong-shaped POST.json.
+const srcHash = sha256File(SRC_PATH);
+const destHash = sha256File(DEST_PATH);
+if (srcHash !== destHash) {
+  console.error(`POST.json copy failed integrity check: source sha256 ${srcHash} != output sha256 ${destHash}`);
+  process.exit(1);
+}
+const byteSize = statSync(DEST_PATH).size;
+console.log(`POST.json copied (${byteSize} bytes, sha256 ${destHash})`);
+
+let parsed: unknown;
+try {
+  parsed = JSON.parse(readFileSync(DEST_PATH, 'utf8'));
+} catch (err) {
+  console.error(`POST.json in ${OUTPUT_DIR} is not valid JSON: ${(err as Error).message}`);
+  process.exit(1);
+}
+const url = (parsed as { url?: unknown } | null)?.url;
+if (typeof url !== 'string' || !/^https:\/\/x\.com\/[^/]+\/status\/\d+$/.test(url)) {
+  console.error(`POST.json url is not a valid X status URL (expected https://x.com/<handle>/status/<id>): ${String(url)}`);
   process.exit(1);
 }
